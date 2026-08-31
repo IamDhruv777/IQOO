@@ -1,0 +1,58 @@
+name: memory_lens
+description: "MemoryLens — Turn any capture into a searchable, AI-structured memory."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Local SQLite storage — no backend required
+  sqflite: ^2.3.3+1
+  path: ^1.9.0
+
+  # Image capture (camera + gallery)
+  image_picker: ^1.1.2
+
+  # Local file path resolution
+  path_provider: ^2.1.4
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # HTTP client for Gemini API calls
+  http: ^1.2.2
+
+  # UUID generation for memory IDs
+  uuid: ^4.4.2
+
+  # Date formatting (used in MemoryDate.formattedValue)
+  intl: ^0.19.0
+
+  # Local notifications for deadline reminders
+  flutter_local_notifications: ^17.2.2
+
+  cupertino_icons: ^1.0.8
+  photo_manager: ^3.12.0
+  timezone: ^0.9.4
+  flutter_staggered_grid_view: ^0.7.0
+  shared_preferences: ^2.5.3
+  google_fonts: ^6.3.2
+  speech_to_text: ^7.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/seed/
+
+  # Note: No custom fonts — using system default for speed.
+  # Add Google Fonts package post-hackathon if desired.
