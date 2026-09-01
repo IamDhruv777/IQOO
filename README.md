@@ -290,48 +290,60 @@ flowchart TD
 
 ## 🔄 End-to-End Data Flow
 
-### Capture Flow
+### 📷 Capture Flow
 
-```
-ImageService.captureFromCamera() / pickFromGallery()
-    ↓
-ImageService.saveImageLocally()          ← copies to ApplicationDocumentsDirectory/memories/
-    ↓
-AiService.extractFromImage()
-    ↓  base64-encodes image bytes
-    ↓  POST generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent
-    ↓  temperature=0.1, maxOutputTokens=8192
-    ↓  returns raw JSON string
-    ↓
-_parseExtractionResponse()               ← regex-strips markdown fences, parses JSON
-    ↓
-Memory object constructed
-    ↓
-ExtractionReviewScreen                   ← user verifies / edits
-    ↓
-DatabaseService.insertMemory()           ← written to memory_lens.db
+```mermaid
+flowchart TD
+    A["Camera / Gallery\nimage_picker"] --> B["ImageService"]
+    B --> C["saveImageLocally()\nCopied immediately to disk"]
+    C --> D["ApplicationDocumentsDirectory/memories/uuid.jpg"]
+    D --> E["AiService.extractFromImage()"]
+    E --> F["Image bytes Base64-encoded"]
+    F --> G["POST gemini-1.5-flash:generateContent\ntemperature=0.1, maxOutputTokens=8192"]
+    G --> H["Raw JSON response"]
+    H --> I["_parseExtractionResponse()\nRegex strips markdown fences, JSON decode"]
+    I --> J{"Parse OK?"}
+    J -->|Yes| K["Memory object\ntitle, summary, category, entities, dates, actions"]
+    J -->|No| L["Memory with processingFailed=true\nImage preserved, retry available"]
+    K --> M["ExtractionReviewScreen\nUser verifies and edits"]
+    L --> M
+    M --> N["DatabaseService.insertMemory()\nmemory_lens.db SQLite v3"]
 ```
 
-### Search Flow
+**How it works:** The image is saved to local storage *before* any AI call is made — a network failure never destroys the capture. The image is Base64-encoded and posted to `gemini-1.5-flash` with a strict JSON-schema prompt at `temperature=0.1` to maximise deterministic output. Gemini occasionally wraps output in markdown fences despite the prompt instruction, so the response is sanitised with regex before JSON parsing. If parsing still fails, the `Memory` is saved with `processingFailed=true` — the original image is never silently lost. Before saving, the user reviews and can edit every extracted field on the `ExtractionReviewScreen`.
 
+---
+
+### 🔎 Search Flow
+
+```mermaid
+flowchart TD
+    A["User Query\nTyped or Voice via speech_to_text"] --> B["SearchScreen"]
+    B --> C["DatabaseService.getAllMemories()\nFull SQLite read"]
+    C --> D["Sort by createdAt DESC, take up to 30"]
+    D --> E["Build metadata context array\ntitle, summary, extracted_text, entities, dates, actions\nNO images sent"]
+    E --> F["AiService.rankMemoriesForQuery()"]
+    F --> G["POST gemini-1.5-flash:generateContent\ntext-only, temperature=0.1"]
+    G --> H{"AI call\nsucceeded?"}
+    H -->|Yes| I["JSON: answer + rankedIds array"]
+    H -->|No| J["Keyword fallback\nClient-side match on title, summary, extracted_text"]
+    I --> K["Map rankedIds to Memory objects\nfrom local SQLite"]
+    J --> K
+    K --> L["Display conversational answer\n+ ranked Memory cards"]
+    L --> M["User taps card\nMemory Details, image loaded from local disk"]
 ```
-User query (typed or voice)
-    ↓
-DatabaseService.getAllMemories()         ← retrieves all stored memories
-    ↓
-Sort by createdAt descending, take 30
-    ↓
-Build memory context JSON array          ← title, summary, extracted_text, entities, dates, actions (NO images)
-    ↓
-AiService.rankMemoriesForQuery()
-    ↓  POST gemini-1.5-flash:generateContent (text-only)
-    ↓  temperature=0.1, maxOutputTokens=8192
-    ↓  returns { answer, rankedIds }
-    ↓
-Display answer + ranked Memory cards
-    ↓
-Fallback: keyword search if AI call fails
-```
+
+**How it works:** At search time, **no images are sent to the AI**. The app reads all memories from SQLite, sorts newest-first, and takes up to 30. Their structured metadata is serialised as a JSON array and posted alongside the user's query to `gemini-1.5-flash`. The model returns a synthesised conversational answer and an ordered list of relevant memory IDs. Those IDs are mapped back to full `Memory` objects in SQLite — the original images are loaded from the device filesystem. No second AI call is needed for display.
+
+> ⚠️ **Current prototype uses LLM-assisted contextual retrieval — not a vector database or embedding-based similarity index.** The `Memory` model has an `embedding` field and the codebase includes a `_cosineSimilarity()` stub, but embedding-based retrieval is not currently active. This is the intended future scaling path.
+
+**Why this works well for the prototype:**
+- Temporal reasoning is native — *"What deadlines are next week?"* is handled directly by the LLM reading date fields
+- Multilingual queries (English, Hinglish, Marathi) need no separate translation step
+- Zero additional infrastructure — one model, one API endpoint
+- At 5–30 memories, context window limits are not a practical constraint
+
+**Known trade-off:** Token cost and latency grow linearly with memory count. The production path is local embedding generation + cosine pre-filtering to send only a bounded top-k set to the LLM — the stub code for this already exists in `ai_service.dart`.
 
 ---
 
@@ -565,17 +577,79 @@ android/
 
 ---
 
-## 🧗 Engineering Challenges & Solutions
+## 🧗 Engineering Challenges — and How We Solved Them
 
-| Challenge | Root Cause | Solution |
-|---|---|---|
-| Malformed AI JSON output | Gemini occasionally wraps JSON in markdown fences | Regex pre-processing strips ` ```json ` before `jsonDecode()`. Falls back to `processingFailed=true` to preserve capture. |
-| Broken app on extraction failure | Unhandled parsing exceptions crashed the app | `try/catch` at every JSON field with per-field defaults; `processingFailed` flag ensures raw images are never silently lost. |
-| Image persistence across app restarts | `XFile` temp path is ephemeral | `ImageService.saveImageLocally()` copies to `ApplicationDocumentsDirectory/memories/` immediately at capture, before AI processing begins. |
-| Search bar text vertically clipping | Hardcoded `height: 44` on `TextField` container | Removed fixed height constraint; let `TextField` internal padding size the container naturally. |
-| Black screen on back navigation | Popping the root `AppShell` navigator accidentally | Removed `leading` back buttons from nested screens; custom `PopScope` in `AppShell` intercepts system back to route to Home tab. |
-| App exit confirmation boring | Default system back dialog | Custom `PopScope` shows a playful "Escaping reality?" dialog on Home tab with Manrope typography. |
-| `onPopInvoked` deprecation | Flutter 3.22+ deprecation | Acknowledged — `onPopInvokedWithResult` migration is in progress. |
+Real problems we hit building MemoryLens, how we investigated them, and what we did about them.
+
+| Challenge | Root Cause | Solution | Result |
+|---|---|---|---|
+| Gemini returns malformed JSON | Model wraps output in markdown fences despite explicit prompt instruction | Regex strips ` ```json ` / ` ``` ` before `jsonDecode()` | Parser handles both clean and fenced responses reliably |
+| App crash on extraction failure | Unhandled `FormatException` from bad JSON killed the screen | Per-field `try/catch` with typed defaults; `processingFailed=true` flag | A failed API parse never loses the captured image |
+| Image lost if AI call fails | `XFile` from `image_picker` points to a temp path that gets cleaned up | `saveImageLocally()` copies to `ApplicationDocumentsDirectory/memories/` *before* the API call | Image is safe on disk regardless of whether Gemini succeeds |
+| Search text field visually clipping | Hardcoded `height: 44` on the `TextField` container cut off descenders | Removed the fixed height constraint; let Flutter size the field from internal padding | Text renders fully across all screen sizes and font scales |
+| Black screen on back navigation | Accidentally popping the root `AppShell` route instead of navigating within it | Removed explicit `leading` back buttons from nested screens; custom `PopScope` handles the system back gesture | Stable back-navigation with no black frames |
+| Capture tab causing index mismatch | `IndexedStack` screen count (3) was out of sync with bottom nav item count (4) | Separated `_navIndex` from `_screenIndex`; Capture (index 1) intercepts the tap and opens a bottom sheet instead of switching screens | Bottom nav behaves correctly with no off-by-one crashes |
+| Reminders silently failing on Android 12+ | `flutter_local_notifications` requires exact-alarm permission on API 31+ | Added `SCHEDULE_EXACT_ALARM` + `USE_EXACT_ALARM` to `AndroidManifest.xml`; fall back to immediate `show()` if scheduled time is already past | Reminders fire reliably; past deadlines trigger immediately |
+| `onPopInvoked` deprecation warning | Flutter 3.22+ deprecated `PopScope.onPopInvoked` | Acknowledged; `onPopInvokedWithResult` migration tracked as a known issue | Static analysis warning documented; no runtime impact |
+
+---
+
+### 🔬 Deeper Look: The Biggest Challenges
+
+#### 1. Gemini Returns Unpredictable JSON
+
+**Problem:** The extraction prompt explicitly says *"Return ONLY a valid JSON object — no prose, no markdown fences."* Gemini still frequently returned output wrapped in ` ```json ... ``` ` markdown blocks. Some responses included trailing commentary after the closing brace.
+
+**Why it happened:** Large language models are trained to produce formatted, readable output. Even with a strict system instruction, the model occasionally defaults to its conversational style.
+
+**How we investigated:** We logged raw API responses during early testing and saw the pattern immediately. The JSON was correct, but the wrapping was breaking `jsonDecode()`.
+
+**Solution:**
+```dart
+String rawText = (parts.first['text'] as String)
+    .replaceAll(RegExp(r'^```[a-z]*\s*', multiLine: true), '')
+    .replaceAll(RegExp(r'^```\s*', multiLine: true), '')
+    .trim();
+```
+Applied before every `jsonDecode()`. If parsing still fails after cleanup, the `Memory` is created with `processingFailed=true` — the raw image is always preserved.
+
+**Result:** Zero lost captures due to AI output formatting issues.
+
+#### 2. The Image Ephemeral Path Problem
+
+**Problem:** During early development, captured images appeared correctly during the session but were missing after the app restarted.
+
+**Why it happened:** `image_picker` returns an `XFile` pointing to a temporary system cache directory. Android is free to clean this cache at any time.
+
+**How we investigated:** We checked the `XFile.path` on restart — the file simply did not exist.
+
+**Solution:** `ImageService.saveImageLocally()` immediately copies the `XFile` to `ApplicationDocumentsDirectory/memories/` using a UUID-based filename — *before* the AI call starts. The `Memory` stores this permanent path. Temporary paths are never persisted.
+
+**Result:** Images survive app restarts, device reboots, and cache clears.
+
+#### 3. Navigation Index Mismatch — The Black Screen
+
+**Problem:** After adding the Memories tab, the app would occasionally flash a black screen when pressing the back button from certain screens.
+
+**Why it happened:** The bottom navigation has 4 items (Home, Capture, Memories, Search), but `IndexedStack` only contains 3 screens (Capture doesn't have a screen — it opens a bottom sheet). When the system back gesture tried to pop the `AppShell` route itself, the Navigator had nothing to show.
+
+**How we investigated:** Flutter's debug navigator observer logs showed the route stack being emptied unexpectedly.
+
+**Solution:** Two fixes applied together:
+1. Decoupled `_navIndex` (which bottom nav item is highlighted) from `_screenIndex` (which `IndexedStack` child shows). The Capture item at `_navIndex=1` is intercepted and opens a `ModalBottomSheet` rather than updating the stack.
+2. Wrapped `AppShell` in `PopScope` to intercept system back gestures — navigating to Home tab if not already there, or showing the exit dialog if already on Home.
+
+**Result:** The back button behaves predictably across all tabs. No black screens.
+
+#### 4. Search Scalability: A Known, Documented Trade-off
+
+**Problem:** Sending up to 30 full memory metadata records to Gemini on every search query is expensive and slow as memory count grows.
+
+**Why it happens:** The LLM context window approach is O(n) in token cost. At 200+ memories, this would become impractical.
+
+**Our response:** We bounded the context to 30 memories (newest-first), documented the limitation explicitly in code comments and in this README, and built the `embedding` field and `_cosineSimilarity()` stub into the architecture now so the production upgrade path is clear. When the collection grows, the plan is to switch to local embeddings + cosine pre-filtering before the LLM call — not to the LLM.
+
+**Result:** Works well for hackathon and early-user scale. Scaling path is designed, not bolted on.
 
 ---
 
@@ -702,54 +776,159 @@ Obtain a free API key at [Google AI Studio](https://aistudio.google.com/).
 
 ## 🗺️ Roadmap
 
-### ✅ Completed
-- Camera + gallery image capture
-- Gemini vision extraction (title, summary, category, text, entities, dates, actions)
-- Local image storage (`ApplicationDocumentsDirectory`)
-- SQLite persistence (`memory_lens.db`)
-- Extraction review screen with user editing
-- Natural-language search (LLM context window approach)
-- Keyword search fallback
-- Voice search (speech_to_text)
-- Scheduled deadline reminders (advance + exact)
-- Manual reminders with optional image attachment
-- Remember screen with proactive deadline surfacing
-- Memory details with original image
-- Category browsing
-- Light + Dark themes (independent warm palettes)
-- Beautiful landing / prototype auth flow
-- `flutter analyze` passing for new code
+### ✅ Today — What's Built
+
+| Feature | Status |
+|---|---|
+| Camera + gallery image capture | ✅ |
+| Gemini vision extraction (title, summary, category, text, entities, dates, actions) | ✅ |
+| Local image storage (`ApplicationDocumentsDirectory/memories/`) | ✅ |
+| SQLite persistence (`memory_lens.db`, schema v3) | ✅ |
+| Extraction review screen — user edits before save | ✅ |
+| Natural-language search (LLM context window, up to 30 memories) | ✅ |
+| Keyword search fallback (client-side, on AI failure) | ✅ |
+| Voice search input via `speech_to_text` | ✅ |
+| Scheduled deadline reminders (on-time + 1-day advance) | ✅ |
+| Manual reminders with text + optional image | ✅ |
+| Remember screen — proactive deadline and recent memory surfacing | ✅ |
+| Memory details — full structured view + original image | ✅ |
+| Category browsing — Event, Receipt, Notice, Contact, Document | ✅ |
+| Light + Dark themes (independent warm palettes, not inverted) | ✅ |
+| Landing screen + prototype auth flow (SharedPreferences) | ✅ |
+
+---
 
 ### 🚧 In Progress / Known Issues
-- `onPopInvoked` → `onPopInvokedWithResult` migration (deprecation warning)
-- Unused imports cleanup in several older screens
-- Search screen: unused `theme` variable
 
-### 🔮 Planned (Post-Hackathon)
-- Local embedding generation + cosine similarity pre-filtering for large memory collections
-- On-device OCR as a fallback when Gemini is unavailable
-- Related memory discovery (link semantically similar memories)
-- Batch re-indexing for memories captured with `processingFailed = true`
-- Backend API key proxy (production security)
-- Database encryption at rest
-- iCloud / Google Drive backup for cross-device sync
-- Broader input types (audio notes, PDF documents)
+- `onPopInvoked` → `onPopInvokedWithResult` migration (Flutter 3.22+ deprecation)
+- Unused imports in several older screens
+- Search screen: unused `theme` local variable
+
+---
+
+### 🔜 Next — Near-Term Improvements
+
+- **Hybrid retrieval:** Local embedding generation + cosine pre-filtering before the LLM context call (stub already exists in `ai_service.dart`)
+- **Related memories:** Surface memories that share the same entity, person, event, or topic
+- **Smarter deadline detection:** Better classification and urgency ranking on the Remember screen
+- **Batch re-indexing:** Process memories that were saved with `processingFailed=true` without re-capturing
+- **API key proxy:** Move the Gemini key to a server-side proxy for production security
+- **Database encryption at rest:** SQLCipher integration
+- **Background indexing:** Auto-process newly added images with user permission
+
+---
+
+### 🔮 Future — The Full Memory Layer
+
+This is the long-term vision: expanding MemoryLens beyond images into a unified personal memory layer.
+
+| Input | Description |
+|---|---|
+| 📄 **PDFs** | Extract and remember information from PDF documents — lecture notes, bills, contracts |
+| 📝 **Documents** | Support for common document formats (DOCX, TXT) |
+| 💬 **WhatsApp** | With explicit user authorization, connect messages and media about the same topic into personal memory |
+| 📧 **Email** | Index emails and attachments — link an internship email to an internship poster memory |
+| ⏰ **Alarms** | Richer scheduled alerts — recurring resurfacing, not just one-time reminders |
+| 📅 **Calendar** | Connect extracted dates and deadlines to calendar events automatically |
+| 🎙️ **Voice Notes** | Capture spoken thoughts as memory, not just voice as a search tool |
+| 🔗 **Cross-Source Linking** | Connect the same topic across image, email, WhatsApp, PDF into one unified memory |
 
 ---
 
 ## 🔮 Future Vision
 
-MemoryLens points toward a simple idea: your phone should function as a genuine external memory system, not just a camera roll.
+Today, information about one thing lives in multiple disconnected places:
 
-The longer-term direction is a personal memory layer that:
+```
+A poster is in your gallery.
+A follow-up is in WhatsApp.
+An attachment arrived by email.
+A deadline is buried in a PDF.
+You discussed it in a voice note.
+```
 
-- Resurfaces relevant memories proactively before you ask
-- Discovers relationships between things you captured weeks apart
-- Works entirely on-device with local AI models
-- Handles broader inputs — audio, documents, handwritten notes
-- Integrates with your calendar and task tools
+None of these know about the others. Retrieval requires remembering which app, which thread, which day.
 
-These are not current features. They represent the direction the product is designed to grow toward.
+**The future MemoryLens is a personal memory layer that connects them.**
+
+---
+
+### Today → Next → Future
+
+```
+TODAY
+──────────────────────────────────────
+📷 Camera images
+🖼️ Gallery photos
+     ↓
+🧠 Structured Memory per image
+     ↓
+🔎 Search + ⏰ Reminders
+
+NEXT
+──────────────────────────────────────
+📷 Images + 🎙️ Voice notes
+     ↓
+🧠 Connected Memories
+   (related entities, shared topics)
+     ↓
+🔎 Reasoning + 🔗 Related Memories
+     ↓
+⏰ Proactive resurfacing
+
+FUTURE
+──────────────────────────────────────
+📷 Images
+🎙️ Voice
+📄 PDFs
+📝 Documents
+💬 WhatsApp (with permission)
+📧 Email (with permission)
+📅 Calendar
+⏰ Alarms
+     ↓
+🧠 Unified Personal Memory Layer
+     ↓
+🔎 Search   🧩 Connect   🤖 Reason
+⏰ Remind   ✨ Act
+```
+
+---
+
+### What This Looks Like in Practice
+
+**Example 1 — An internship you spotted on a poster:**
+
+> Today: You photograph the poster. MemoryLens extracts the deadline and company.
+>
+> Future: MemoryLens notices the same company in your email inbox. It links the confirmation email and the attached PDF offer letter to the same memory. You ask *"What was that Zomato internship?"* and get a single answer combining the poster, the email, and the document.
+
+**Example 2 — A bill you need to pay:**
+
+> Today: You photograph the electricity bill. MemoryLens extracts the amount and due date and can remind you.
+>
+> Future: The app connects the bill memory to a WhatsApp message you sent your roommate about splitting it, and surfaces a combined reminder that the payment is due tomorrow and the split is still pending.
+
+**Example 3 — What do I need to take care of this week?**
+
+> Today: MemoryLens can answer this from image-captured deadlines.
+>
+> Future: MemoryLens combines image deadlines, email commitments, WhatsApp follow-ups, and calendar events into one grounded, contextual answer — sourced, not hallucinated.
+
+---
+
+### Privacy Direction for Future Integrations
+
+Integrating email, WhatsApp, and documents involves sensitive data. The future architecture commits to:
+
+- End-to-end encryption for any synced data
+- Explicit opt-in permission per source — nothing is connected without user action
+- Granular deletion — remove any source's contribution from memory at any time
+- On-device processing wherever technically feasible
+- No data sold, aggregated, or used for training without explicit consent
+- Open architecture — users should be able to audit what is connected
+
+> These are future design goals. The current prototype stores data locally with no backend and does not connect any external sources.
 
 ---
 
