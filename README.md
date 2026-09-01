@@ -768,9 +768,9 @@ These are not current features. They represent the direction the product is desi
 
 | Member | Role | GitHub |
 |---|---|---|
-| IamDhruv777 | Lead Developer — Architecture, AI, UI, Navigation | [@IamDhruv777](https://github.com/IamDhruv777) |
-| dishant1313 | UI Components, Theme System | — |
-| *(Teammate 3)* | Models, Services | — |
+| Dhruv Madderlawar | Lead Developer — Architecture, AI, UI, Navigation | [@IamDhruv777](https://github.com/IamDhruv777) |
+| Dishant Parjane | UI Components, Theme System | — |
+| Ishika Mahadar | Models, Services | — |
 
 ---
 
