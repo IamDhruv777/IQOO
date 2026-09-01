@@ -948,13 +948,13 @@ class _PageThreeState extends State<_PageThree> with TickerProviderStateMixin {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _buildExtractedField('ðŸ§ ', 'AI Hackathon', colors.textPrimary, true),
+            _buildExtractedField('✨', 'AI Hackathon', colors.textPrimary, true),
             const SizedBox(height: 10),
-            _buildExtractedField('ðŸ“‹', 'Event', colors.textSecondary, false),
+            _buildExtractedField('🏷️', 'Event', colors.textSecondary, false),
             const SizedBox(height: 10),
-            _buildExtractedField('ðŸ“…', 'Sep 5', colors.textSecondary, false),
+            _buildExtractedField('📅', 'Sep 5', colors.textSecondary, false),
             const SizedBox(height: 10),
-            _buildExtractedField('ðŸ“ ', 'Main Aud.', colors.textSecondary, false),
+            _buildExtractedField('📍', 'Main Aud.', colors.textSecondary, false),
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
